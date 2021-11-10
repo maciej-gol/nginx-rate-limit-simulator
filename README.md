@@ -1,1 +1,0 @@
-# nginx-rate-limit-simulator
