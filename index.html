@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+
+    <title>Hello, world!</title>
+  </head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <h1>Nginx Rate Limit Simulator</h1>
+      </div>
+
+      <form id="input-form">
+        <div class="row g-3">
+          <div class="col-3">
+            <label for="input-rate-limit" class="col-form-label">Rate limit</label>
+            <input type="text" value="100r/s" placeholder="100r/s" id="input-rate-limit" class="form-control">
+          </div>
+          <div class="col-3">
+            <label for="input-traffic-count" class="col-form-label">Traffic count</label>
+            <input type="text" value="100" placeholder="100" id="input-traffic-count" class="form-control">
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-3">
+            <label for="input-burst" class="col-form-label">Burst</label>
+            <input type="text" id="input-burst" value="10" placeholder="A positive integer" class="form-control">
+          </div>
+          <div class="col-3">
+            <label for="input-traffic-shape" class="col-form-label">Traffic Shape</label>
+            <select id="input-traffic-shape" class="form-select">
+              <option selected value="one-at-start">One request at start</option>
+              <option value="random">One random request</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-3">
+            <label for="input-simulation-time" class="col-form-label">Simulation time</label>
+            <input type="text" id="input-simulation-time" value="1m" placeholder="10m" class="form-control">
+          </div>
+          <div id="traffic-shape-custom-container" style="display:  none" class="col-3">
+            <label for="input-traffic-shape-custom" class="col-form-label">Custom Traffic Shape</label>
+            <textarea id="input-traffic-shape-custom" class="form-control">
+class {
+  constructor(simulationTimeMsec) {
+  }
+
+  makeRequests(currentMsec) {
+    return 1;
+  }
+}
+            </textarea>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Run</button>
+      </form>
+    </div>
+
+    <div id="chart" style="margin-top: 5px" class="container">
+    </div>
+    <script src="https://code.highcharts.com/highcharts.src.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-MrcW6ZMFYlzcLA8Nl+NtUVF0sA7MsXsP1UyJoMp4YLEuNSfAP+JcXn/tWtIaxVXM" crossorigin="anonymous"></script>
+    <script type="text/javascript">
+      var chart = Highcharts.chart('chart', {
+          chart: {
+              type: 'column',
+              zoomType: 'x',
+          },
+          title: {
+              text: 'Timeline'
+          },
+          xAxis: {
+            type: "linear",
+            labels: {
+              formatter: function() {
+                return this.value + "ms";
+              }
+            }
+          },
+          yAxis: [
+            {min: 0},
+            {min: 0, opposite: true, title: {text: "RPS"}},
+          ],
+          series: [{
+              name: 'Excess (before requests)',
+              data: []
+          }, {
+              name: 'Accepted requests',
+              color: '#00FF00',
+              data: []
+          }, {
+              name: 'Rejected requests',
+              color: '#FF0000',
+              data: []
+          }, {
+              name: 'RPS',
+              color: '#770077',
+              type: "line",
+              yAxis: 1,
+              data: []
+          }]
+      });
+
+      var currentSimulation = null;
+
+      class RequestAtStartShape {
+        constructor() {
+          this._done = false;
+        }
+
+        makeRequests(currentMsec) {
+          if (!this._done) {
+            this._done = true;
+            return 1;
+          }
+          return 0;
+        }
+      }
+
+      class RandomRequestShape {
+        constructor(simulationTime) {
+          this._triggerMsec = Math.floor(Math.random() * simulationTime);
+          this._done = false;
+        }
+
+        makeRequests(currentMsec) {
+          if (!this._done && currentMsec >= this._triggerMsec) {
+            this._done = true;
+            return 1;
+          }
+          return 0;
+        }
+      }
+
+      const inputRateLimit = document.querySelector("#input-rate-limit");
+      const inputTrafficCount = document.querySelector("#input-traffic-count");
+      const inputBurst = document.querySelector("#input-burst");
+      const inputTrafficShape = document.querySelector("#input-traffic-shape");
+      const inputSimulationTime = document.querySelector("#input-simulation-time");
+      const inputTrafficShapeCustom = document.querySelector("#input-traffic-shape-custom");
+      const inputTrafficShapeCustomContainer = document.querySelector("#traffic-shape-custom-container");
+
+      inputTrafficShape.addEventListener("change", function() {
+        if (inputTrafficShape.value == "custom") {
+          inputTrafficShapeCustomContainer.style.display = "";
+        } else {
+          inputTrafficShapeCustomContainer.style.display = "none";
+        }
+      });
+
+      const inputForm = document.querySelector("#input-form");
+      inputForm.addEventListener("submit", function(e) {
+        e.preventDefault();
+        const rateLimit = inputRateLimit.value;
+        const trafficCount = parseInt(inputTrafficCount.value);
+        const burst = parseInt(inputBurst.value);
+        var simulationTimeMatch = /(\d+)m/g.exec(inputSimulationTime.value);
+        if (!simulationTimeMatch) {
+          throw "yyy";
+        }
+        const simulationTime = parseInt(simulationTimeMatch[1]) * 60 * 1000;
+
+        var shapeClass = null;
+        switch (inputTrafficShape.value) {
+          case "one-at-start":
+            shapeClass = RequestAtStartShape;
+            break
+          case "random":
+            shapeClass = RandomRequestShape;
+            break;
+          case "custom":
+            shapeClass = eval(`(function x() {return ` + inputTrafficShapeCustom.value + `})()`);
+            break;
+        }
+
+        chart.series[0].setData([], false);
+        chart.series[1].setData([], false);
+        chart.series[2].setData([], false);
+        chart.series[3].setData([], false);
+        var totalAccepted = 0;
+        console.log('started');
+        (new Simulation(rateLimit, burst, 100, shapeClass, trafficCount, simulationTime)).run(function(currentMsec, excess, accepted, rejected) {
+          totalAccepted += accepted;
+          chart.series[0].addPoint([currentMsec, excess], false);
+          chart.series[1].addPoint([currentMsec, accepted], false);
+          chart.series[2].addPoint([currentMsec, rejected], false);
+          chart.series[3].addPoint([currentMsec, Math.floor(totalAccepted/(currentMsec / 1000))], false);
+        });
+        console.log('finished');
+        chart.redraw();
+      });
+
+
+      class Simulation {
+        constructor(rateLimit, burst, stepMsec, shapeClass, shapeCount, simulationTime) {
+          var match = /(\d+)r\/([ms])/g.exec(rateLimit);
+          if (!match) {
+            throw "xxx";
+          }
+          var multiplier = 0.001;
+          if (match[2] == "m") {
+            multiplier /= 3600;
+          }
+          this.perMsec = parseInt(match[1]) * multiplier;
+          this.excess = this.maxExcess = parseInt(burst);
+          this.stepMsec = stepMsec;
+          this.currentMsec = 0;
+          this.simulationTime = simulationTime;
+          this.shapes = [];
+          for (var i = 0; i < shapeCount; ++i) {
+            this.shapes.push(new shapeClass(this.simulationTime));
+          };
+        }
+
+        run(cb) {
+          while (this.currentMsec <= this.simulationTime) {
+            cb(...this.step());
+          }
+        }
+
+        step() {
+          var excessBefore = Math.min(this.excess + this.stepMsec * this.perMsec, this.maxExcess);
+          var currentMsec = this.currentMsec;
+          var requestsToMake = this.shapes.map(function(s) { return s.makeRequests(currentMsec); }).reduce((a,b) => a+b, 0);
+          var accepted = Math.min(requestsToMake, Math.floor(excessBefore));
+          this.excess = excessBefore - accepted;
+
+          this.currentMsec += this.stepMsec;
+          return [this.currentMsec, excessBefore, accepted, requestsToMake - accepted];
+        }
+      }
+    </script>
+  </body>
+</html>
